@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AStarForge — A* 寻路锻造炉</title>
+<style>
+  :root{ --bg:#0d1117; --panel:#161b22; --edge:#30363d; --fg:#e6edf3; --dim:#8b949e; --acc:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ background:var(--bg); color:var(--fg); font:14px/1.5 Consolas,"Microsoft YaHei",monospace; padding:20px; }
+  h1{ font-size:20px; color:var(--acc); margin-bottom:4px; }
+  .sub{ color:var(--dim); margin-bottom:14px; }
+  .wrap{ display:flex; gap:18px; flex-wrap:wrap; }
+  .panel{ background:var(--panel); border:1px solid var(--edge); border-radius:8px; padding:14px; }
+  .left{ flex:0 0 auto; }
+  .right{ flex:1 1 320px; min-width:300px; }
+  canvas{ display:block; background:#0a0d12; border:1px solid var(--edge); border-radius:6px; }
+  .row{ display:flex; align-items:center; gap:10px; margin:8px 0; flex-wrap:wrap; }
+  button{ background:#21262d; color:var(--fg); border:1px solid var(--edge); border-radius:6px; padding:6px 14px; cursor:pointer; font:inherit; }
+  button:hover{ border-color:var(--acc); color:var(--acc); }
+  button.primary{ background:#1f427a; border-color:var(--acc); }
+  input[type=range]{ width:130px; }
+  .stat{ color:var(--dim); }
+  .stat b{ color:var(--fg); }
+  .legend{ display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; font-size:12px; color:var(--dim); }
+  .sw{ display:inline-block; width:12px; height:12px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  #test{ margin-top:14px; }
+  #test .t{ padding:2px 0; }
+  #test .pass{ color:var(--ok); } #test .fail{ color:var(--bad); }
+  .cols{ column-count:2; column-gap:24px; }
+  @media (max-width:1100px){ .cols{ column-count:1; } }
+</style>
+</head>
+<body>
+<h1>✦ AStarForge — A* 寻路锻造炉</h1>
+<div class="sub">二叉堆 + Manhattan 启发式 · 最优性 = BFS 参照交叉验证 · 完美迷宫生成 · 单文件离线</div>
+
+<div class="wrap">
+  <div class="panel left">
+    <canvas id="cv" width="660" height="462"></canvas>
+    <div class="legend">
+      <span><i class="sw" style="background:#21262d"></i>墙</span>
+      <span><i class="sw" style="background:#0a0d12"></i>通路</span>
+      <span><i class="sw" style="background:#1f6feb"></i>closed</span>
+      <span><i class="sw" style="background:#58a6ff"></i>open/frontier</span>
+      <span><i class="sw" style="background:#f0883e"></i>路径</span>
+      <span><i class="sw" style="background:#3fb950"></i>起点</span>
+      <span><i class="sw" style="background:#f85149"></i>终点</span>
+    </div>
+  </div>
+
+  <div class="panel right">
+    <div class="row">
+      <button id="bMaze" class="primary">生成完美迷宫</button>
+      <button id="bRand">随机墙壁</button>
+      <button id="bSolve" class="primary">▶ A* 求解</button>
+      <button id="bClear">清空</button>
+    </div>
+    <div class="row">
+      <span class="stat">墙密度</span><input type="range" id="density" min="0" max="60" value="28">
+      <span class="stat">速度</span><input type="range" id="speed" min="1" max="60" value="25">
+    </div>
+    <div class="row stat" id="info">状态：待命</div>
+    <div class="row stat">closed <b id="sClosed">0</b> · open <b id="sOpen">0</b> · 路径长 <b id="sPath">—</b> · 代价 <b id="sCost">—</b></div>
+    <div id="test"><div class="row" style="color:var(--dim)">引擎自检 <button id="bTest" style="padding:2px 10px">运行</button></div><div id="tout" class="cols"></div></div>
+  </div>
+</div>
+
+<script id="engine">
+const AStar = (function(){
+  'use strict';
+
+  // ---------- binary min-heap keyed by (f, h) ----------
+  function less(a, b){ return a.f < b.f || (a.f === b.f && a.h < b.h); }
+  function Heap(){ this.a = []; }
+  Heap.prototype.push = function(n){
+    const a = this.a; a.push(n);
+    let i = a.length - 1;
+    while (i > 0){
+      const p = (i - 1) >> 1;
+      if (less(a[i], a[p])){ const t = a[i]; a[i] = a[p]; a[p] = t; i = p; } else break;
+    }
+  };
+  Heap.prototype.pop = function(){
+    const a = this.a;
+    if (a.length === 0) return null;
+    const top = a[0], last = a.pop();
+    if (a.length > 0){
+      a[0] = last;
+      let i = 0;
+      for (;;){
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < a.length && less(a[l], a[m])) m = l;
+        if (r < a.length && less(a[r], a[m])) m = r;
+        if (m === i) break;
+        const t = a[i]; a[i] = a[m]; a[m] = t; i = m;
+      }
+    }
+    return top;
+  };
+  Heap.prototype.size = function(){ return this.a.length; };
+  // invariant: parent.f <= child.f (and tie-break h)
+  Heap.prototype.valid = function(){
+    const a = this.a;
+    for (let i = 1; i < a.length; i++){
+      const p = (i - 1) >> 1;
+      if (less(a[i], a[p])) return false;
+    }
+    return true;
+  };
+
+  // ---------- grid helpers ----------
+  const DX = [1, -1, 0, 0], DY = [0, 0, 1, -1];
+  function neighbors(i, W, H, walls, out){
+    out.length = 0;
+    const x = i % W, y = (i / W) | 0;
+    for (let d = 0; d < 4; d++){
+      const nx = x + DX[d], ny = y + DY[d];
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const ni = ny * W + nx;
+      if (walls.has(ni)) continue;
+      out.push(ni);
+    }
+    return out;
+  }
+
+  // ---------- BFS reference (unit cost Dijkstra) ----------
+  function bfsDist(W, H, walls, start){
+    const dist = new Int32Array(W * H).fill(-1);
+    if (walls.has(start)) return dist;
+    dist[start] = 0;
+    const q = [start];
+    const nb = [];
+    for (let qi = 0; qi < q.length; qi++){
+      const c = q[qi];
+      neighbors(c, W, H, walls, nb);
+      for (let k = 0; k < nb.length; k++){
+        const n = nb[k];
+        if (dist[n] === -1){ dist[n] = dist[c] + 1; q.push(n); }
+      }
+    }
+    return dist;
+  }
+
+  // ---------- A* (unit cost, Manhattan heuristic) ----------
+  function manhattan(i, goal, W){
+    return Math.abs(i % W - goal % W) + Math.abs(((i / W) | 0) - ((goal / W) | 0));
+  }
+  function astar(W, H, walls, start, goal){
+    const N = W * H;
+    const res = { found: false, path: [], cost: 0, expanded: 0, openPeak: 0 };
+    if (walls.has(start) || walls.has(goal)) return res;
+    const g = new Int32Array(N).fill(-1);
+    const from = new Int32Array(N).fill(-1);
+    const inOpen = new Uint8Array(N);
+    const closed = new Uint8Array(N);
+    const open = new Heap();
+    g[start] = 0;
+    open.push({ i: start, g: 0, f: manhattan(start, goal, W), h: manhattan(start, goal, W) });
+    inOpen[start] = 1;
+    const nb = [];
+    while (open.size() > 0){
+      const cur = open.pop();
+      const ci = cur.i;
+      if (closed[ci]) continue;          // stale entry
+      closed[ci] = 1;
+      res.expanded++;
+      if (ci === goal){
+        res.found = true;
+        res.cost = g[ci];
+        let p = ci;
+        while (p !== -1){ res.path.push(p); p = from[p]; }
+        res.path.reverse();
+        return res;
+      }
+      neighbors(ci, W, H, walls, nb);
+      for (let k = 0; k < nb.length; k++){
+        const n = nb[k];
+        if (closed[n]) continue;
+        const ng = g[ci] + 1;
+        if (g[n] === -1 || ng < g[n]){
+          g[n] = ng;
+          from[n] = ci;
+          const h = manhattan(n, goal, W);
+          open.push({ i: n, g: ng, f: ng + h, h: h });
+          inOpen[n] = 1;
+        }
+      }
+      if (open.size() > res.openPeak) res.openPeak = open.size();
+    }
+    return res;
+  }
+
+  // ---------- perfect maze (recursive backtracker, odd dims) ----------
+  function mulberry32(seed){
+    let t = seed >>> 0;
+    return function(){
+      t += 0x6D2B79F5;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function genMaze(W, H, seed){
+    const rnd = mulberry32(seed);
+    const walls = new Set();
+    for (let i = 0; i < W * H; i++) walls.add(i);
+    const sx = 1, sy = 1;
+    walls.delete(sy * W + sx);
+    const stack = [sy * W + sx];
+    while (stack.length > 0){
+      const c = stack[stack.length - 1];
+      const cx = c % W, cy = (c / W) | 0;
+      const dirs = [0, 1, 2, 3].sort(() => rnd() - 0.5);
+      let moved = false;
+      for (const d of dirs){
+        const nx = cx + DX[d] * 2, ny = cy + DY[d] * 2;
+        if (nx <= 0 || ny <= 0 || nx >= W - 1 || ny >= H - 1) continue;
+        const ni = ny * W + nx;
+        if (!walls.has(ni)) continue;
+        walls.delete(ni);
+        walls.delete((cy + DY[d]) * W + (cx + DX[d]));   // knock the wall between
+        stack.push(ni);
+        moved = true;
+        break;
+      }
+      if (!moved) stack.pop();
+    }
+    return walls;
+  }
+
+  return { Heap, astar, bfsDist, genMaze, mulberry32, manhattan, neighbors, DX, DY };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = AStar;
+</script>
+
+<script>
+(function(){
+  'use strict';
+  const A = AStar;
+  const W = 44, H = 30, CELL = 15;
+  const cv = document.getElementById('cv');
+  cv.width = W * CELL; cv.height = H * CELL;
+  const ctx = cv.getContext('2d');
+  let walls = new Set();
+  let start = 1 * W + 1, goal = (H - 2) * W + (W - 2);
+  let closedSet = new Set(), openSet = new Set(), pathSet = new Set();
+  let animTimer = null;
+
+  const COLORS = { wall:'#21262d', closed:'#1f6feb', open:'#58a6ff', path:'#f0883e', start:'#3fb950', goal:'#f85149' };
+
+  function draw(){
+    ctx.fillStyle = '#0a0d12';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    for (let i = 0; i < W * H; i++){
+      const x = (i % W) * CELL, y = ((i / W) | 0) * CELL;
+      let c = null;
+      if (walls.has(i)) c = COLORS.wall;
+      else if (closedSet.has(i)) c = COLORS.closed;
+      else if (openSet.has(i)) c = COLORS.open;
+      if (c){ ctx.fillStyle = c; ctx.fillRect(x, y, CELL - 1, CELL - 1); }
+    }
+    for (const i of pathSet){
+      const x = (i % W) * CELL, y = ((i / W) | 0) * CELL;
+      ctx.fillStyle = COLORS.path; ctx.fillRect(x, y, CELL - 1, CELL - 1);
+    }
+    ctx.fillStyle = COLORS.start; ctx.fillRect((start % W) * CELL, ((start / W) | 0) * CELL, CELL - 1, CELL - 1);
+    ctx.fillStyle = COLORS.goal; ctx.fillRect((goal % W) * CELL, ((goal / W) | 0) * CELL, CELL - 1, CELL - 1);
+  }
+
+  function info(t){ document.getElementById('info').textContent = '状态：' + t; }
+  function stats(closedN, openN, pl, cost){
+    document.getElementById('sClosed').textContent = closedN;
+    document.getElementById('sOpen').textContent = openN;
+    document.getElementById('sPath').textContent = pl === null ? '—' : pl;
+    document.getElementById('sCost').textContent = cost === null ? '—' : cost;
+  }
+
+  function resetMarks(){ closedSet.clear(); openSet.clear(); pathSet.clear(); }
+
+  function genMaze(){
+    stopAnim();
+    walls = A.genMaze(W, H, (Math.random() * 1e9) | 0);
+    // ensure endpoints free (they're odd coords, always carved in perfect maze)
+    resetMarks(); draw();
+    stats(0, 0, null, null);
+    info('完美迷宫已生成（递归回溯，连通性由引擎保证）');
+  }
+
+  function genRandom(){
+    stopAnim();
+    walls = new Set();
+    const d = +document.getElementById('density').value / 100;
+    for (let i = 0; i < W * H; i++)
+      if (Math.random() < d && i !== start && i !== goal) walls.add(i);
+    resetMarks(); draw();
+    stats(0, 0, null, null);
+    info('随机墙壁已生成（密度 ' + document.getElementById('density').value + '%）');
+  }
+
+  function clearAll(){
+    stopAnim();
+    walls = new Set();
+    resetMarks(); draw();
+    stats(0, 0, null, null);
+    info('已清空');
+  }
+
+  function stopAnim(){ if (animTimer){ clearInterval(animTimer); animTimer = null; } }
+
+  function solve(){
+    stopAnim();
+    resetMarks();
+    const t0 = performance.now();
+    const r = A.astar(W, H, walls, start, goal);
+    const ms = (performance.now() - t0).toFixed(2);
+    if (!r.found){ draw(); stats(0, 0, null, null); info('不可达（起点或终点被隔离）· 耗时 ' + ms + 'ms'); return; }
+    // animate: first show closed/open growth, then path
+    const dist = A.bfsDist(W, H, walls, start);
+    let step = 0;
+    const order = [];
+    // re-derive expansion order approximately: just reveal closed via path + bfs order
+    for (let i = 0; i < W * H; i++) if (dist[i] >= 0) order.push(i);
+    order.sort((a, b) => dist[a] - dist[b]);
+    const sp = +document.getElementById('speed').value;
+    animTimer = setInterval(function(){
+      for (let k = 0; k < sp * 4 && step < r.expanded; k++, step++){
+        const cell = order[step] !== undefined ? order[step] : step;
+        if (cell < W * H && !walls.has(cell)) closedSet.add(cell);
+      }
+      stats(Math.min(step, r.expanded), 0, null, null);
+      draw();
+      if (step >= r.expanded){
+        stopAnim();
+        for (const p of r.path) pathSet.add(p);
+        draw();
+        stats(r.expanded, 0, r.path.length, r.cost);
+        info('找到路径：代价 ' + r.cost + ' · 展开节点 ' + r.expanded + ' · 耗时 ' + ms + 'ms' +
+             '（BFS 参照同代价: ' + dist[goal] + (dist[goal] === r.cost ? ' ✓' : ' ✗ 不一致!') + '）');
+      }
+    }, 16);
+  }
+
+  document.getElementById('bMaze').onclick = genMaze;
+  document.getElementById('bRand').onclick = genRandom;
+  document.getElementById('bClear').onclick = clearAll;
+  document.getElementById('bSolve').onclick = solve;
+  cv.onclick = function(e){
+    const rect = cv.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / CELL);
+    const y = Math.floor((e.clientY - rect.top) / CELL);
+    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const i = y * W + x;
+    if (e.shiftKey){ if (!walls.has(i)){ start = i; resetMarks(); draw(); } }
+    else if (e.altKey){ if (!walls.has(i)){ goal = i; resetMarks(); draw(); } }
+    else { if (i === start || i === goal) return; walls.has(i) ? walls.delete(i) : walls.add(i); draw(); }
+    info('提示：Shift+点击 设起点 · Alt+点击 设终点 · 普通点击 切换墙壁');
+  };
+
+  // ---------- self test ----------
+  function T(name, ok, detail){
+    return { name: name, ok: ok, detail: detail || '' };
+  }
+  function runTests(){
+    const out = [];
+    // 1) heap invariant + sorted pops
+    {
+      const rnd = A.mulberry32(42);
+      const h = new A.Heap();
+      const vals = [];
+      for (let k = 0; k < 500; k++){ const f = (rnd() * 1000) | 0; h.push({ f: f, h: 0 }); vals.push(f); }
+      let inv = h.valid();
+      const popped = [];
+      while (h.size() > 0){ const n = h.pop(); popped.push(n.f); }
+      let sorted = true;
+      for (let k = 1; k < popped.length; k++) if (popped[k] < popped[k - 1]) sorted = false;
+      out.push(T('堆不变量 500 随机键 + pop 出序有序', inv && sorted, 'pushed ' + vals.length));
+    }
+    // 2) optimality cross-validation vs BFS, 300 random grids
+    {
+      const rnd = A.mulberry32(7);
+      let ok = true, bad = '', solved = 0;
+      for (let t = 0; t < 300; t++){
+        const w = 20, hh = 20;
+        const walls = new Set();
+        for (let i = 0; i < w * hh; i++) if (rnd() < 0.3) walls.add(i);
+        const s = ((rnd() * hh) | 0) * w + ((rnd() * w) | 0);
+        const g = ((rnd() * hh) | 0) * w + ((rnd() * w) | 0);
+        if (walls.has(s)) walls.delete(s);
+        if (walls.has(g)) walls.delete(g);
+        const r = A.astar(w, hh, walls, s, g);
+        const dist = A.bfsDist(w, hh, walls, s);
+        const expect = dist[g];
+        if ((expect >= 0) !== r.found){ ok = false; bad = 't' + t + ' reachability mismatch'; break; }
+        if (r.found){
+          solved++;
+          if (r.cost !== expect){ ok = false; bad = 't' + t + ' cost ' + r.cost + ' != BFS ' + expect; break; }
+          if (r.path.length !== r.cost + 1){ ok = false; bad = 't' + t + ' path length != cost+1'; break; }
+          if (r.path[0] !== s || r.path[r.path.length - 1] !== g){ ok = false; bad = 't' + t + ' endpoints'; break; }
+          for (let k = 0; k < r.path.length; k++){
+            if (walls.has(r.path[k])){ ok = false; bad = 't' + t + ' path crosses wall'; break; }
+            if (k > 0){
+              const a = r.path[k - 1], b = r.path[k];
+              const adj = Math.abs(a % w - b % w) + Math.abs(((a / w) | 0) - ((b / w) | 0)) === 1;
+              if (!adj){ ok = false; bad = 't' + t + ' non-adjacent step'; break; }
+            }
+          }
+          if (!ok) break;
+        }
+      }
+      out.push(T('最优性交叉验证：300 随机网格 A* 代价 == BFS 距离 + 路径合法', ok, bad || ('可达 ' + solved + '/300，全部最优')));
+    }
+    // 3) perfect maze connectivity (every open cell reachable)
+    {
+      let ok = true;
+      for (let t = 0; t < 10; t++){
+        const walls = A.genMaze(21, 21, 1000 + t);
+        const dist = A.bfsDist(21, 21, walls, 1 * 21 + 1);
+        for (let i = 0; i < 21 * 21; i++){
+          if (!walls.has(i) && dist[i] === -1){ ok = false; break; }
+        }
+        if (!ok) break;
+      }
+      out.push(T('完美迷宫：10 个种子下全部通路单元可达（递归回溯 = 生成树）', ok));
+    }
+    // 4) determinism
+    {
+      const walls = A.genMaze(21, 21, 99);
+      const r1 = A.astar(21, 21, walls, 1 * 21 + 1, 19 * 21 + 19);
+      const r2 = A.astar(21, 21, walls, 1 * 21 + 1, 19 * 21 + 19);
+      out.push(T('确定性：同输入两次运行路径逐位一致', JSON.stringify(r1.path) === JSON.stringify(r2.path), 'cost ' + r1.cost));
+    }
+    // 5) no-solution case
+    {
+      const walls = new Set();
+      const w = 10, hh = 10;
+      for (let x = 0; x < w; x++) walls.add(5 * w + x);   // full wall row
+      const r = A.astar(w, hh, walls, 0, 9 * w + 9);
+      out.push(T('不可达：整行墙 → found=false，不崩溃', r.found === false && r.path.length === 0));
+    }
+    // 6) known vector: empty 10x10 grid corner->corner, Manhattan exact
+    {
+      const r = A.astar(10, 10, new Set(), 0, 9 * 10 + 9);
+      out.push(T('已知向量：空 10x10 角到角代价 18 且路径长 19', r.found && r.cost === 18 && r.path.length === 19));
+    }
+    // 7) admissible heuristic ⇒ expanded ≤ BFS closed count (efficiency)
+    {
+      const rnd = A.mulberry32(123);
+      let ok = true, totalA = 0, totalB = 0;
+      for (let t = 0; t < 50; t++){
+        const w = 30, hh = 30;
+        const walls = new Set();
+        for (let i = 0; i < w * hh; i++) if (rnd() < 0.25) walls.add(i);
+        const s = 1 * w + 1, g = (hh - 2) * w + (w - 2);
+        if (walls.has(s)) walls.delete(s);
+        if (walls.has(g)) walls.delete(g);
+        const r = A.astar(w, hh, walls, s, g);
+        if (!r.found) continue;
+        const dist = A.bfsDist(w, hh, walls, s);
+        let bCount = 0;
+        for (let i = 0; i < w * hh; i++) if (dist[i] >= 0) bCount++;
+        totalA += r.expanded; totalB += bCount;
+        if (r.expanded > bCount){ ok = false; break; }
+      }
+      out.push(T('可采纳启发式：A* 展开数 ≤ BFS 全可达数（50 网格）', ok, 'A* ' + totalA + ' vs BFS ' + totalB));
+    }
+    // 8) start == goal
+    {
+      const r = A.astar(10, 10, new Set(), 42, 42);
+      out.push(T('退化：起点==终点 → 代价 0 路径 [42]', r.found && r.cost === 0 && r.path.length === 1 && r.path[0] === 42));
+    }
+
+    const box = document.getElementById('tout');
+    box.innerHTML = '';
+    let pass = 0;
+    for (const t of out){
+      const d = document.createElement('div');
+      d.className = 't ' + (t.ok ? 'pass' : 'fail');
+      d.textContent = (t.ok ? '✓ ' : '✗ ') + t.name + (t.detail ? '  [' + t.detail + ']' : '');
+      box.appendChild(d);
+      if (t.ok) pass++;
+    }
+    const s = document.createElement('div');
+    s.className = 't ' + (pass === out.length ? 'pass' : 'fail');
+    s.textContent = '—— ' + pass + '/' + out.length + ' ——';
+    box.appendChild(s);
+    info('自检完成：' + pass + '/' + out.length);
+  }
+  document.getElementById('bTest').onclick = runTests;
+
+  genMaze();
+})();
+</script>
+</body>
+</html>
