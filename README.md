@@ -1,5 +1,12 @@
 # AStarForge — A* 寻路锻造炉
 
+<p align="center">
+  <a href="https://github.com/CJX0712/astar-forge/actions/workflows/ci.yml"><img src="https://github.com/CJX0712/astar-forge/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/CJX0712/astar-forge/releases"><img src="https://img.shields.io/github/v/release/CJX0712/astar-forge?sort=semver" alt="release"></a>
+  <a href="https://github.com/CJX0712/astar-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CJX0712/astar-forge" alt="license"></a>
+  <img src="https://img.shields.io/badge/author-%E6%99%A8%E6%98%9F-1f6feb" alt="author">
+</p>
+
 单文件离线 A* 寻路工具：二叉堆 + Manhattan 启发式，完美迷宫（递归回溯）与随机墙壁两种场景，
 动画演示 open/closed 扩张与最终路径，Shift+点击设起点、Alt+点击设终点、普通点击切换墙壁。
 零外部依赖，浏览器直接打开即用。
